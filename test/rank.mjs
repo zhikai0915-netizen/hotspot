@@ -15,7 +15,7 @@
  *
  * 跑法：node test/rank.mjs
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -128,17 +128,40 @@ function writeLegacy(offsetDays, stars) {
   return date;
 }
 
-// 时间线（相对现在）：
-//   200 天前：one 10, two 20         ← 旧格式，测兼容；月榜/总榜基线
-//   240 小时前（10 天）：one 100, two 50   ← 周榜基线
-//   48 小时前（2 天）：one 130, two 52, three 25 ← 日榜与飙升日榜基线
-//   12 小时前：one 137, two 54       ← 只为制造「日内多采样」
-const LEGACY = writeLegacy(200, { 'a/one': 10, 'a/two': 20 });
-writeSamples([
-  [240, { 'a/one': 100, 'a/two': 50 }],
-  [48, { 'a/one': 130, 'a/two': 52, 'a/three': 25 }],
-  [12, { 'a/one': 137, 'a/two': 54 }],
-]);
+// 采样点必须**锚定日程边界**，不能再用「现在减 N 小时」——
+// v0.4.0 起区间是 [上一个日程边界, 本边界]，与流水时间无关。
+// 先把模块 import 进来，用它的日程函数算出三个边界各自在哪。
+const mod = await import('../lib/index.js');
+const I = mod.__internals;
+const S = I.DEFAULT_CONFIG.schedule;
+const dayB = I.lastBoundary(S.day, Date.now());
+const weekB = I.lastBoundary(S.week, Date.now());
+const monthB = I.lastBoundary(S.month, Date.now());
+const dayCut = I.lastBoundary(S.day, dayB - 1);   // 日榜基线 = 昨天 00:00
+const weekCut = I.lastBoundary(S.week, weekB - 1); // 周榜基线 = 上一个周一
+const monthCut = I.lastBoundary(S.month, monthB - 1); // 月榜基线 = 上个月 1 号
+const isoOf = (ms) => new Date(ms).toISOString();
+
+/**
+ * 写一个采样点。同一天可能有多个采样点（monthCut/weekCut/dayCut 可能落在同一天），
+ * 所以按日期读-改-写，保持 samples 数组有序。
+ */
+function writeSample(atMs, stars) {
+  const date = dayKeyOf(atMs);
+  const file = join(snapDir, date + '.json');
+  let samples = [];
+  if (existsSync(file)) {
+    try { samples = JSON.parse(readFileSync(file, 'utf8')).samples ?? []; } catch { samples = []; }
+  }
+  samples = samples.filter((x) => x.at !== new Date(atMs).toISOString());
+  samples.push({ at: new Date(atMs).toISOString(), stars });
+  samples.sort((a, b) => (a.at < b.at ? -1 : 1));
+  writeFileSync(file, JSON.stringify({ date, samples }));
+}
+
+writeSample(monthCut, { 'a/one': 10, 'a/two': 20 });        // 月榜/总榜基线
+writeSample(weekCut, { 'a/one': 100, 'a/two': 50 });       // 周榜 + 飙升榜基线
+writeSample(dayCut, { 'a/one': 130, 'a/two': 52, 'a/three': 25 }); // 日榜基线
 
 // ---------- 配置 ----------
 
@@ -206,7 +229,6 @@ const ctx = {
 };
 let route;
 
-const mod = await import('../lib/index.js');
 mod.apply(ctx);
 
 const server = createServer((req, res) => {
@@ -234,40 +256,43 @@ try {
   const week = await call('/dsh-hotspot/rank?board=t&period=week&refresh=1');
   check('HTTP 200', week.status === 200, JSON.stringify(week.body).slice(0, 160));
   check('basis = star-delta', week.body?.basis === 'star-delta', String(week.body?.basis));
-  check('windowStart = 240 小时前那个采样（旧格式文件也被正确读取）', week.body?.windowStart === SAMPLE_AT.get(240), String(week.body?.windowStart));
+  check('周榜基线 = 上一个周一 00:00', week.body?.windowStart === isoOf(weekCut), String(week.body?.windowStart) + ' vs ' + isoOf(weekCut));
   check('delta 正确：one=+40、two=+5', week.body?.items?.[0]?.delta === 40 && week.body?.items?.[1]?.delta === 5, JSON.stringify(deltas(week.body)));
   check('按 delta 降序', String(names(week.body)) === 'a/one,a/two,a/three', String(names(week.body)));
   check('基线里没有的仓库标 isNew', week.body?.items?.[2]?.isNew === true && week.body?.items?.[2]?.fullName === 'a/three');
 
-  console.log('\n[2] 日榜：基线应换成 2 天前的采样');
+  console.log('\n[2] 日榜：基线应换成昨天 00:00 的采样');
   const day = await call('/dsh-hotspot/rank?board=t&period=day&refresh=1');
+  check('日榜基线 = 昨天 00:00', day.body?.windowStart === isoOf(dayCut), String(day.body?.windowStart) + ' vs ' + isoOf(dayCut));
   check(
     'delta 变成 one=+10、three=+5、two=+3（2 天前的采样里三个都在）',
     JSON.stringify(deltas(day.body)) === JSON.stringify([['a/one', 10], ['a/three', 5], ['a/two', 3]]),
     JSON.stringify(deltas(day.body)),
   );
 
-  console.log('\n[3] 月榜 / 总榜：基线落到 200 天前那个旧格式文件');
+  console.log('\n[3] 月榜 / 总榜：基线落到上个月 1 号');
   const month = await call('/dsh-hotspot/rank?board=t&period=month&refresh=1');
+  check('月榜基线 = 上个月 1 号', month.body?.windowStart === isoOf(monthCut), String(month.body?.windowStart) + ' vs ' + isoOf(monthCut));
   check('月榜 delta：one=+130、two=+35', month.body?.items?.[0]?.delta === 130 && month.body?.items?.[1]?.delta === 35, JSON.stringify(deltas(month.body)));
   const all = await call('/dsh-hotspot/rank?board=t&period=all&refresh=1');
   check('总榜 delta 与月榜一致', JSON.stringify(deltas(all.body)) === JSON.stringify(deltas(month.body)));
   check('样本数 ≥ 4', (all.body?.sampleCount ?? 0) >= 4, String(all.body?.sampleCount));
 
-  console.log('\n[4] 飙升榜 · 日（24 小时窗口）：跨全部已追踪仓库按涨星排序');
+  console.log('\n[4] 飙升榜：固定按周统计（忽略页签），基线 = 上一个周一');
   const surgeDay = await call('/dsh-hotspot/rank?board=surge&period=day');
   check('HTTP 200 且无需抓取', surgeDay.status === 200, String(surgeDay.status));
   check('basis = star-velocity', surgeDay.body?.basis === 'star-velocity', String(surgeDay.body?.basis));
-  check('三个仓库都进榜（含未出现在当前搜索结果里的）', names(surgeDay.body).sort().join(',') === 'a/one,a/three,a/two', String(names(surgeDay.body)));
-  check('排序：one(+10) > three(+5) > two(+3)', String(names(surgeDay.body)) === 'a/one,a/three,a/two', String(names(surgeDay.body)));
+  check('忽略页签且日程为每周一', surgeDay.body?.scheduled?.ignoresPeriodTabs === true && surgeDay.body?.scheduled?.rule === '每周一 00:00', String(surgeDay.body?.scheduled?.rule));
+  check('基线 = 上一个周一（与周榜同一采样）', surgeDay.body?.windowStart === isoOf(weekCut), String(surgeDay.body?.windowStart) + ' vs ' + isoOf(weekCut));
+  check('只有基线里存在的仓库进榜（three 被排除）', String(names(surgeDay.body)) === 'a/one,a/two', String(names(surgeDay.body)));
+  check('按涨星排序：one(+40) > two(+5)', surgeDay.body?.items?.[0]?.delta === 40 && surgeDay.body?.items?.[1]?.delta === 5, JSON.stringify(surgeDay.body?.items?.map((i) => [i.fullName, i.delta])));
   check('给出星/天速度', typeof surgeDay.body?.items?.[0]?.perDay === 'number' && surgeDay.body.items[0].perDay > 0, String(surgeDay.body?.items?.[0]?.perDay));
-  check('windowHours 有值（日榜 = surgeWindowHours）', typeof surgeDay.body?.windowHours === 'number', String(surgeDay.body?.windowHours));
 
-  console.log('\n[5] 飙升榜 · 周（7 天窗口）：基线里没有的仓库必须被排除');
+  console.log('\n[5] 飙升榜：换页签拿到的是同一份冻结结果');
   const surgeWeek = await call('/dsh-hotspot/rank?board=surge&period=week');
-  check('three 被排除（10 天前的基线里没有它）', !names(surgeWeek.body).includes('a/three'), String(names(surgeWeek.body)));
-  check('周窗口 delta：one=+40、two=+5', String(names(surgeWeek.body)) === 'a/one,a/two' && surgeWeek.body.items[0].delta === 40, JSON.stringify(deltas(surgeWeek.body)));
-  check('窗口小时数 ≈ 240', (surgeWeek.body?.windowHours ?? 0) > 200, String(surgeWeek.body?.windowHours));
+  check('换页签仍是每周一日程', surgeWeek.body?.scheduled?.rule === '每周一 00:00', String(surgeWeek.body?.scheduled?.rule));
+  check('命中同一把冻结键', surgeWeek.body?.scheduled?.frozen === true, String(surgeWeek.body?.scheduled?.frozen));
+  check('条目与 windowStart 完全一致', JSON.stringify(names(surgeWeek.body)) === JSON.stringify(names(surgeDay.body)) && surgeWeek.body?.windowStart === surgeDay.body?.windowStart);
 
   console.log('\n[6] 采样：追加 vs 合并');
   const todayFile = join(snapDir, dayKeyOf(Date.now()) + '.json');
@@ -409,7 +434,7 @@ try {
   const stale = await call('/dsh-hotspot/rank?board=st&period=week&refresh=1');
   check('HTTP 仍为 200（不清空）', stale.status === 200, String(stale.status));
   check('stale = true 且条目数不变', stale.body?.stale === true && stale.body?.items?.length === 3, String(stale.body?.items?.length));
-  check('notes 说明本次刷新失败', JSON.stringify(stale.body?.notes).includes('刷新失败'), JSON.stringify(stale.body?.notes));
+  check('notes 说明本次抓取失败', JSON.stringify(stale.body?.notes).includes('抓取失败'), JSON.stringify(stale.body?.notes));
 
   console.log('\n[10] 快照保留期清理');
   const filesBefore = readdirSync(snapDir).length;
