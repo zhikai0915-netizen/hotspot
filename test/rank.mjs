@@ -179,6 +179,21 @@ const ctx = {
       llmCalls.push(options);
       if (llmMode === 'throw') throw new Error('模拟模型调用失败');
       if (llmMode === 'empty') return;
+      if (llmMode === 'protocol') {
+        // dsh-llm 的**真实**分片协议（见其 assembler.js 的 push）
+        yield { type: 'block-start', index: 0, blockType: 'text' };
+        yield { type: 'text-delta', index: 0, text: '这是中文简介：把 A 变成 B' };
+        yield { type: 'text-delta', index: 0, text: '，解决 C 问题。' };
+        // 块里的完整文本与增量拼接结果相同：正确的解析器不能重复计数
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: '这是中文简介：把 A 变成 B，解决 C 问题。' } };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+        return;
+      }
+      if (llmMode === 'errorfinish') {
+        // 适配器错误被 dsh-llm 折进终止块，不在流里抛出
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: '模型不存在', code: 'MODEL_NOT_FOUND' } } };
+        return;
+      }
       yield { type: 'text', text: '这是中文简介：把 A 变成 B，解决 C 问题。' };
     },
   },
@@ -268,9 +283,15 @@ try {
   await call('/dsh-hotspot/rank?board=t&period=week&refresh=1');
   const afterAppend = sampleCount();
   check('间隔足够 → 追加新采样（' + before + ' → ' + afterAppend + '）', afterAppend === before + 1, String(afterAppend));
+  const atBeforeMerge = JSON.parse(readFileSync(todayFile, 'utf8')).samples.slice(-1)[0].at;
   await call('/dsh-hotspot/rank?board=t&period=week&refresh=1');
   const afterMerge = sampleCount();
   check('间隔不足 → 合并进上一个采样，不再新增', afterMerge === afterAppend, afterAppend + ' → ' + afterMerge);
+  // 回归：v0.2.0 第一个 bug —— 合并时把 at 往前推，导致一天只剩一个采样、
+  // 时间序列被自己抹掉（飙升榜永远 insufficient-history）
+  const lastAfterMerge = JSON.parse(readFileSync(todayFile, 'utf8')).samples.slice(-1)[0];
+  check('合并时**不得**推进采样时间 at', lastAfterMerge.at === atBeforeMerge, atBeforeMerge + ' → ' + lastAfterMerge.at);
+  check('合并会更新 lastAt（该采样内星数的实际观测时刻）', typeof lastAfterMerge.lastAt === 'string' && lastAfterMerge.lastAt !== lastAfterMerge.at, JSON.stringify(lastAfterMerge).slice(0, 120));
 
   console.log('\n[7] 中文简介：异步生成 + 落盘缓存');
   // 用「简介测试榜」里那个从未生成过的新仓库，才能观察到 pending → 填充 的完整过程
@@ -294,6 +315,59 @@ try {
   check('调用参数带 messages 数组', Array.isArray(llmCalls[0]?.messages) && llmCalls[0].messages.length === 1);
   const secondRank = await call('/dsh-hotspot/rank?board=n&period=week');
   check('再次请求直接命中缓存（summary 有值、pending=false）', typeof secondRank.body?.items?.[0]?.summary === 'string' && secondRank.body.items[0].summaryPending === false, String(secondRank.body?.items?.[0]?.summary));
+
+  console.log('\n[7b] 认 dsh-llm 的真实分片协议（text-delta），且不重复计数');
+  llmMode = 'protocol';
+  const callsBeforeProto = llmCalls.length;
+  // 改掉官方简介 → 指纹变化 → 应视为过期并重新生成（顺带验证缓存失效）
+  githubPlan = (url) => {
+    const decoded = decodeURIComponent(String(url));
+    if (decoded.includes('topic:n')) {
+      return fakeResponse({ total_count: 1, items: [{ ...repo('c/new', 9), description: '改写过的官方简介 v2' }] });
+    }
+    return fakeResponse({ total_count: 3, items: CURRENT });
+  };
+  const protoRank = await call('/dsh-hotspot/rank?board=n&period=week&refresh=1');
+  check('官方简介变化 → 指纹失效 → 重新排队', protoRank.body?.items?.[0]?.summaryPending === true, String(protoRank.body?.items?.[0]?.summaryPending));
+  for (let i = 0; i < 50 && llmCalls.length === callsBeforeProto; i++) await sleep(100);
+  await sleep(700);
+  const protoSummaries = await call('/dsh-hotspot/summaries');
+  check(
+    'text-delta 分片被拼成正确文本（block-end 的整块文本不重复计数）',
+    protoSummaries.body?.texts?.['c/new']?.text === '这是中文简介：把 A 变成 B，解决 C 问题。',
+    String(protoSummaries.body?.texts?.['c/new']?.text),
+  );
+  check(
+    '诊断显示用的是内置兜底实现（dsh-llm 在本地装不成）',
+    String(protoSummaries.body?.stats?.lastDiag?.moduleSource ?? '').includes('兜底'),
+    JSON.stringify(protoSummaries.body?.stats?.lastDiag ?? {}),
+  );
+  check('诊断记录 stage=ok 与模型名', protoSummaries.body?.stats?.lastDiag?.stage === 'ok' && String(protoSummaries.body.stats.lastDiag.model).includes('/'), JSON.stringify(protoSummaries.body?.stats?.lastDiag ?? {}));
+
+  console.log('\n[7c] 没有正文时，必须报出 finish 里的真实原因（而不是一句没信息量的话）');
+  llmMode = 'errorfinish';
+  const callsBeforeErr = llmCalls.length;
+  githubPlan = (url) => {
+    const decoded = decodeURIComponent(String(url));
+    if (decoded.includes('topic:n')) {
+      return fakeResponse({ total_count: 1, items: [{ ...repo('c/new', 9), description: '改写过的官方简介 v3' }] });
+    }
+    return fakeResponse({ total_count: 3, items: CURRENT });
+  };
+  await call('/dsh-hotspot/rank?board=n&period=week&refresh=1');
+  for (let i = 0; i < 50 && llmCalls.length === callsBeforeErr; i++) await sleep(100);
+  await sleep(700);
+  const errSummaries = await call('/dsh-hotspot/summaries');
+  check('失败原因取自 finish.failure.message', errSummaries.body?.failures?.['c/new']?.reason === '模型不存在', String(errSummaries.body?.failures?.['c/new']?.reason));
+  check('失败记录带上插件版本（便于升级后自动重试）', typeof errSummaries.body?.failures?.['c/new']?.v === 'string', JSON.stringify(errSummaries.body?.failures?.['c/new'] ?? {}));
+  check('诊断记录了 finish 原文', errSummaries.body?.stats?.lastDiag?.finish?.kind === 'error', JSON.stringify(errSummaries.body?.stats?.lastDiag?.finish ?? {}));
+
+  console.log('\n[7d] /summaries/reset 可清掉失败冷却');
+  const reset = await call('/dsh-hotspot/summaries/reset', { method: 'POST' });
+  check('reset 返回清理条数', reset.status === 200 && reset.body?.ok === true && typeof reset.body.cleared === 'number', JSON.stringify(reset.body).slice(0, 120));
+  const afterReset = await call('/dsh-hotspot/summaries');
+  check('失败记录已清空（简介文本保留）', Object.keys(afterReset.body?.failures ?? {}).length === 0 && Object.keys(afterReset.body?.texts ?? {}).length > 0, JSON.stringify({ f: Object.keys(afterReset.body?.failures ?? {}).length, t: Object.keys(afterReset.body?.texts ?? {}).length }));
+  llmMode = 'ok';
 
   console.log('\n[8] 简介失败进冷却，不再反复重试');
   const callsBefore = llmCalls.length;

@@ -1,6 +1,6 @@
 {
   "name": "hotspot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH GitHub 热榜插件：按日/周/月给模型插件、Skill、MCP 服务等小工具排名，含跨榜飙升榜，并用 DSH 的模型为每个项目生成中文简介。",
   "type": "module",
   "main": "lib/index.js",
@@ -55,8 +55,10 @@
     "  这里 inject 故意留空：本插件不依赖任何官方 client 包，降低版本门槛。",
     "id 必须与包名一致（商城上架契约按它比对 entryIds），见 cordis.patch.yml。",
     "未声明 dsh.compatibility：尚未在真实 DSH 版本上实测，不做无证据的兼容声明。",
-    "v0.2.0 起：日内多次采样（+ 旧格式兼容读）、跨榜飙升榜、用 ctx.llm 生成中文简介",
-    "（简介用惰性 import 拿 @deepseek-ai/dsh-llm，拿不到只关掉简介，不影响其它功能）。",
+    "v0.2.0：日内多次采样（+ 旧格式兼容读）、跨榜飙升榜、用 ctx.llm 生成中文简介。",
+    "v0.2.1：修两处 —— ① 采样合并不再推进 at（否则一天只剩一个采样，飙升榜永远没数据）；",
+    "  ② 简介解析改用 dsh-llm 的真实 text-delta 分片协议 + 自带兜底实现（实测该包在本地",
+    "  node_modules 里没 package.json、且是指向 npx 缓存的链接，裸 import 与绝对路径 import 都失败）。",
     "================================================"
   ]
 }

@@ -23,6 +23,12 @@ hotspot 用 **DSH 自己的模型**（`ctx.llm`，与你在对话里用的是同
 - **可以关**：配置里 `"summarize": false`，或换用指定模型 `"summaryModel": {"provider": "...", "model": "..."}`
   （默认跟随当前对话的模型）。
 - **降级**：模型服务不可用时，只有简介这一项消失（界面显示原文 + 标记），其余功能照常。
+- **不依赖 `@deepseek-ai/dsh-llm` 能被 import**：实测该包在本地 `node_modules` 里
+  **没有 package.json**、且是指向 npx 缓存的链接，裸 `import` 与绝对路径 `import` 都会失败。
+  所以本插件**自带一份协议正确的实现**（消息带 `id`、认 `text-delta` 分片、读 `finish`），
+  官方包只在能加载到时优先使用。
+- **失败记录带插件版本**：升级后旧失败会被视为「可能已被修掉的 bug」而自动重试，
+  不必等冷却过去（`POST /dsh-hotspot/summaries/reset` 也可手动清空）。
 
 > ⚠️ 简介会**消耗你的模型额度**（每条一次很短的小请求，约 100 token 量级），且结果永久缓存。
 > 不想要就把 `summarize` 设为 `false`。
@@ -49,6 +55,11 @@ GitHub API **不提供历史星数**。`GET /search/repositories` 只给「此�
 
 日内多采样的两个好处：区间基线能精确到「不晚于 cut-off 的最近一个样本」；
 飙升榜可以算**每天涨多少星**的速度，而不是只能拿整天当最小粒度。
+
+> ⚠️ 合并采样时**只更新星数、绝不推进 `at`**（并用 `lastAt` 记录星数的实际观测时刻）。
+> 这一点是 v0.2.1 修的 bug：0.2.0 合并时把 `at` 推到当前时刻，导致一天下来永远只剩一个
+> 「当前时刻」的采样，时间序列被自己抹掉 —— 飙升榜永远 `insufficient-history`，
+> 区间涨星也永远算不出来。
 （0.1.0 的旧格式 `{ date, savedAt, stars }` 仍能正确读取。）
 
 于是存在一个**诚实的冷启动期**：
@@ -174,7 +185,8 @@ dsh plugin --profile web add '<hotspot 所在目录的绝对路径>'
 | GET | `/dsh-hotspot/config` | 当前生效配置 + 元信息 |
 | PUT | `/dsh-hotspot/config` | 局部更新配置（board 列表是整体替换，注意） |
 | GET | `/dsh-hotspot/rank?board=<id>&period=day\|week\|month\|all&refresh=1` | 排名数据 |
-| GET | `/dsh-hotspot/summaries` | 中文简介缓存与生成进度 |
+| GET | `/dsh-hotspot/summaries` | 中文简介缓存、生成进度与**最近一次调用的诊断** |
+| POST | `/dsh-hotspot/summaries/reset` | 清空失败记录（想立刻重试时用；平时升级会自动重试） |
 | POST | `/dsh-hotspot/refresh[?board=<id>]` | 立即刷新（全部或单个查询榜） |
 
 `/rank` 的响应形状：
@@ -239,10 +251,9 @@ node test/rank.mjs     # 核心算法：打桩 fetch + 手写历史采样，确�
 
 ## 兼容性
 
-未声明 `dsh.compatibility` —— 本插件**尚未在真实 DSH 版本上实测**，不做没有证据的
-兼容声明。宿主半侧静态 import 只有 node 内置模块；唯一需要的官方包
-`@deepseek-ai/dsh-llm`（`BlockAssembler` / `createUserMessage`）用**惰性动态 import**，
-拿不到就只关掉中文简介。
+未声明 `dsh.compatibility`。宿主半侧**静态 import 只有 node 内置模块**，运行期对官方包
+零硬依赖：`@deepseek-ai/dsh-llm` 仅作「能加载就用」的优化，加载不到时用自带的等价实现
+（见上文「中文简介」一节）。这也意味着本插件不会因为官方包改名、换布局而整体加载失败。
 
 ## 路线图
 
