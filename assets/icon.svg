@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="hotspot">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0f172a"/>
+  <rect x="14" y="34" width="8" height="16" rx="2" fill="#3b82f6"/>
+  <rect x="28" y="26" width="8" height="24" rx="2" fill="#60a5fa"/>
+  <rect x="42" y="18" width="8" height="32" rx="2" fill="#93c5fd"/>
+  <path d="M43 14c3.6-3.1 6-5.6 6-8.2 0-1.6-1.1-2.8-2.7-2.8-1.2 0-2.2.6-2.9 1.6-.7-1-1.7-1.6-2.9-1.6C39 3 38 4.2 38 5.8c0 2.7 2.4 5.1 5 8.2z" fill="#f97316" transform="translate(1 6) scale(.92)"/>
+  <path d="M20 30l6-6 5 3 9-9" fill="none" stroke="#f97316" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+</svg>

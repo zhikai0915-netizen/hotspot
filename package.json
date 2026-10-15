@@ -1,0 +1,59 @@
+{
+  "name": "hotspot",
+  "version": "0.1.0",
+  "description": "DSH GitHub 热榜插件：按日/周/月给模型插件、Skill、MCP 服务等小工具排名，榜单类型可自定义。",
+  "type": "module",
+  "main": "lib/index.js",
+  "icon": "assets/icon.svg",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "github",
+    "trending",
+    "leaderboard",
+    "hotspot"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "_comment": [
+    "=============== hotspot 包清单说明 ===============",
+    "无构建步骤：lib/index.js 与 lib/client.js 就是手写源码（纯 JS，无 TS/打包）。",
+    "  宿主半侧(host)：ESM，导出 name / inject / apply，注册 /dsh-hotspot 前缀路由。",
+    "  浏览器半侧(client)：必须是「普通副作用脚本」——加载时调 window.__ModuleLoader__.load，",
+    "  顶层不能有 import/export，react 由 factory 的 require 取得。",
+    "dsh.bundle.patch → 声明本包是 bundle，安装后 patch 自动进层栈。",
+    "dsh.client → 声明浏览器半侧，DSH 模块系统据此提供 /plugins/hotspot/client.js。",
+    "  这里 inject 故意留空：本插件不依赖任何官方 client 包，降低版本门槛。",
+    "id 必须与包名一致（商城上架契约按它比对 entryIds），见 cordis.patch.yml。",
+    "未声明 dsh.compatibility：尚未在真实 DSH 版本上实测，不做无证据的兼容声明。",
+    "================================================"
+  ]
+}

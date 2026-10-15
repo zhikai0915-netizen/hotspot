@@ -1,0 +1,12 @@
+# 统一换行符：仓库里存 LF，检出也用 LF。
+# 浏览器半侧是给 DSH 前端加载的脚本，跨平台保持一致更省事；
+# 不加这条时 Windows 上每次 git 操作都会刷 "LF will be replaced by CRLF" 警告。
+* text=auto eol=lf
+
+# 二进制/素材不要做换行转换
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.wav binary
+*.mp3 binary
