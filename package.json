@@ -32,7 +32,8 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "test": "node test/smoke.mjs && node test/client.mjs"
+    "test": "node test/smoke.mjs && node test/client.mjs && node test/rank.mjs",
+    "test:rank": "node test/rank.mjs"
   },
   "dsh": {
     "bundle": {

@@ -23,6 +23,7 @@ process.env.DSH_HOME = home;
 
 const failures = [];
 let checks = 0;
+let skipped = 0;
 
 /** 极简断言：记录失败但不中断，最后统一汇总。 */
 function check(label, condition, detail = '') {
@@ -33,6 +34,17 @@ function check(label, condition, detail = '') {
     failures.push(label + (detail ? ' — ' + detail : ''));
     console.log('  ✗ ' + label + (detail ? ' — ' + detail : ''));
   }
+}
+
+/**
+ * 跳过：与 check 区分开。本文件有一部分断言依赖真实 GitHub 数据，
+ * 而**未认证搜索只有 10 次/分钟**——连续跑几轮测试就会耗尽额度。
+ * 那种情况下拿不到数据是环境限制，不是代码缺陷，所以不计入失败。
+ * 核心算法（涨星、基线、限流降级）的确定性覆盖在 test/rank.mjs，那边全程打桩、不碰网络。
+ */
+function skip(label, reason) {
+  skipped += 1;
+  console.log('  – ' + label + '（跳过：' + reason + '）');
 }
 
 /** 收集插件注册的路由处理器与 effect 清理器。 */
@@ -98,9 +110,10 @@ try {
 
   console.log('\n[3] GET /rank（真实访问 GitHub 搜索 API）');
   const rank = await call('/dsh-hotspot/rank?board=dsh-plugin&period=week&refresh=1');
-  if (rank.status === 429) {
-    console.log('  ! GitHub 限流（429），跳过数据断言（这本身也证明限流分流正确）');
-    check('限流时返回结构化错误', typeof rank.body?.error === 'string' && rank.body?.kind === 'rate-limited');
+  const limited = rank.status === 429;
+  if (limited) {
+    check('限流时返回结构化错误（429 + kind）', typeof rank.body?.error === 'string' && rank.body?.kind === 'rate-limited');
+    console.log('  ! GitHub 限流：未认证搜索限 10 次/分钟，本分钟额度已耗尽');
   } else {
     check('HTTP 200', rank.status === 200, JSON.stringify(rank.body).slice(0, 200));
     check('拿到条目', (rank.body?.items?.length ?? 0) > 0, String(rank.body?.items?.length));
@@ -111,23 +124,42 @@ try {
     console.log('    榜首：' + first?.fullName + '（★' + first?.stars + '）');
   }
 
+  // 下面四组都依赖「至少成功抓到过一次数据」，限流时整组跳过
+  const networkReason = 'GitHub 限流（10 次/分钟额度耗尽）';
+
   console.log('\n[4] 快照落盘');
-  const snapDir = join(home, 'hotspot', 'snapshots');
-  const files = existsSync(snapDir) ? readdirSync(snapDir) : [];
-  check('写了当日快照文件', files.length === 1 && files[0].endsWith('.json'), files.join(','));
+  if (limited) {
+    skip('写了当日快照文件', networkReason);
+  } else {
+    const snapDir = join(home, 'hotspot', 'snapshots');
+    const files = existsSync(snapDir) ? readdirSync(snapDir) : [];
+    check('写了当日快照文件', files.length === 1 && files[0].endsWith('.json'), files.join(','));
+  }
 
   console.log('\n[5] 第二次 rank 走缓存');
-  const cached = await call('/dsh-hotspot/rank?board=dsh-plugin&period=day');
-  check('HTTP 200', cached.status === 200, String(cached.status));
-  check('period 被接受', cached.body?.period === 'day', String(cached.body?.period));
+  if (limited) {
+    skip('period 被接受', networkReason);
+  } else {
+    const cached = await call('/dsh-hotspot/rank?board=dsh-plugin&period=day');
+    check('HTTP 200', cached.status === 200, String(cached.status));
+    check('period 被接受', cached.body?.period === 'day', String(cached.body?.period));
+  }
 
   console.log('\n[6] 非法周期回落');
-  const bogus = await call('/dsh-hotspot/rank?board=dsh-plugin&period=nonsense');
-  check('非法 period 回落到 week', bogus.body?.period === 'week', String(bogus.body?.period));
+  if (limited) {
+    skip('非法 period 回落到 week', networkReason);
+  } else {
+    const bogus = await call('/dsh-hotspot/rank?board=dsh-plugin&period=nonsense');
+    check('非法 period 回落到 week', bogus.body?.period === 'week', String(bogus.body?.period));
+  }
 
   console.log('\n[7] 未知榜单回落第一个');
-  const unknown = await call('/dsh-hotspot/rank?board=__nope__&period=week');
-  check('回落成功且不报错', unknown.status === 200 && unknown.body?.board?.id === 'dsh-plugin', String(unknown.body?.board?.id));
+  if (limited) {
+    skip('未知榜单回落到第一个', networkReason);
+  } else {
+    const unknown = await call('/dsh-hotspot/rank?board=__nope__&period=week');
+    check('回落成功且不报错', unknown.status === 200 && unknown.body?.board?.id === 'dsh-plugin', String(unknown.body?.board?.id));
+  }
 
   console.log('\n[8] GET /config 与 PUT /config');
   const cfg = await call('/dsh-hotspot/config');
@@ -173,10 +205,15 @@ try {
 }
 
 console.log('\n================ 结果 ================');
-console.log('断言 ' + checks + ' 项，失败 ' + failures.length + ' 项');
+console.log('断言 ' + checks + ' 项，失败 ' + failures.length + ' 项，跳过 ' + skipped + ' 项');
+if (skipped > 0) {
+  console.log('提示：跳过项全部因为 GitHub 未认证搜索的 10 次/分钟额度耗尽。');
+  console.log('      等约 1 分钟重跑，或设好 GITHUB_TOKEN 后重跑即可恢复完整覆盖。');
+  console.log('      核心算法（涨星/基线/限流降级/快照清理）在 test/rank.mjs 里全程打桩，不受额度影响。');
+}
 if (failures.length > 0) {
   for (const f of failures) console.log('  ✗ ' + f);
   process.exitCode = 1;
 } else {
-  console.log('全部通过');
+  console.log(skipped > 0 ? '通过（含跳过项）' : '全部通过');
 }

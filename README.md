@@ -173,11 +173,17 @@ $DSH_HOME/hotspot/
 `import`/`export` 的普通副作用脚本。
 
 ```sh
+npm test               # 三套一起跑
 node test/smoke.mjs    # 宿主半侧：起真实 HTTP 服务打自己（会真实访问一次 GitHub）
 node test/client.mjs   # 浏览器半侧：vm 模拟 __ModuleLoader__ 契约 + 渲染一次组件
+node test/rank.mjs     # 核心算法：打桩 fetch + 手写历史快照，确定性验证涨星/基线/限流/清理
 ```
 
-`test/smoke.mjs` 用临时目录当 `DSH_HOME`，不会污染真实数据。
+- `test/smoke.mjs`、`test/rank.mjs` 都用临时目录当 `DSH_HOME`，不会污染真实数据。
+- `test/smoke.mjs` 的那一次真实 GitHub 请求受 **10 次/分钟**额度限制：额度耗尽时它会
+  把依赖网络数据的 4 项标成**跳过**（不是失败），并提示原因——这类红是环境问题，不是代码缺陷。
+  想避免就配好 `GITHUB_TOKEN` 再跑。
+- `test/rank.mjs` **全程打桩、不碰网络**，所以核心算法在任何情况下都有确定性覆盖。
 
 ## 兼容性
 
