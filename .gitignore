@@ -5,3 +5,6 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# 安装到 DSH profile 前做的本地备份，不进仓库
+.install-backup/

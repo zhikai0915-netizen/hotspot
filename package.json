@@ -1,7 +1,7 @@
 {
   "name": "hotspot",
-  "version": "0.1.0",
-  "description": "DSH GitHub 热榜插件：按日/周/月给模型插件、Skill、MCP 服务等小工具排名，榜单类型可自定义。",
+  "version": "0.2.0",
+  "description": "DSH GitHub 热榜插件：按日/周/月给模型插件、Skill、MCP 服务等小工具排名，含跨榜飙升榜，并用 DSH 的模型为每个项目生成中文简介。",
   "type": "module",
   "main": "lib/index.js",
   "icon": "assets/icon.svg",
@@ -55,6 +55,8 @@
     "  这里 inject 故意留空：本插件不依赖任何官方 client 包，降低版本门槛。",
     "id 必须与包名一致（商城上架契约按它比对 entryIds），见 cordis.patch.yml。",
     "未声明 dsh.compatibility：尚未在真实 DSH 版本上实测，不做无证据的兼容声明。",
+    "v0.2.0 起：日内多次采样（+ 旧格式兼容读）、跨榜飙升榜、用 ctx.llm 生成中文简介",
+    "（简介用惰性 import 拿 @deepseek-ai/dsh-llm，拿不到只关掉简介，不影响其它功能）。",
     "================================================"
   ]
 }

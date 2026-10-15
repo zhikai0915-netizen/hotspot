@@ -104,7 +104,9 @@ try {
   console.log('\n[2] GET /status（不访问 GitHub）');
   const status = await call('/dsh-hotspot/status');
   check('HTTP 200', status.status === 200, String(status.status));
-  check('返回 7 个默认榜单', status.body?.boards?.length === 7, String(status.body?.boards?.length));
+  check('返回 8 个默认榜单（7 个查询榜 + 1 个飙升榜）', status.body?.boards?.length === 8, String(status.body?.boards?.length));
+  check('飙升榜被标记 kind=surge', status.body?.boards?.some((b) => b.id === 'surge' && b.kind === 'surge') === true);
+  check('暴露 sampleCount / registrySize / summaryStats', typeof status.body?.sampleCount === 'number' && typeof status.body?.registrySize === 'number' && status.body?.summaryStats !== undefined);
   check('未配置 token 时 tokenConfigured=false', status.body?.tokenConfigured === false);
   check('store 目录落在临时 DSH_HOME 下', String(status.body?.store).startsWith(home), String(status.body?.store));
 
@@ -153,13 +155,16 @@ try {
     check('非法 period 回落到 week', bogus.body?.period === 'week', String(bogus.body?.period));
   }
 
-  console.log('\n[7] 未知榜单回落第一个');
-  if (limited) {
-    skip('未知榜单回落到第一个', networkReason);
-  } else {
-    const unknown = await call('/dsh-hotspot/rank?board=__nope__&period=week');
-    check('回落成功且不报错', unknown.status === 200 && unknown.body?.board?.id === 'dsh-plugin', String(unknown.body?.board?.id));
-  }
+  console.log('\n[7] 未知榜单回落第一个（现在是飙升榜，且不需要网络）');
+  const unknown = await call('/dsh-hotspot/rank?board=__nope__&period=week');
+  check('回落成功且不报错', unknown.status === 200 && unknown.body?.board?.id === 'surge', String(unknown.body?.board?.id));
+  check('飙升榜在样本不足时如实降级', unknown.body?.basis === 'insufficient-history', String(unknown.body?.basis));
+
+  console.log('\n[7b] GET /summaries（中文简介缓存）');
+  const summaries = await call('/dsh-hotspot/summaries');
+  check('HTTP 200', summaries.status === 200, String(summaries.status));
+  check('返回 stats/texts/failures', summaries.body?.stats !== undefined && summaries.body?.texts !== undefined && summaries.body?.failures !== undefined);
+  check('没有可用模型时失败被记录（或本就为空）', typeof summaries.body.stats.failed === 'number');
 
   console.log('\n[8] GET /config 与 PUT /config');
   const cfg = await call('/dsh-hotspot/config');
