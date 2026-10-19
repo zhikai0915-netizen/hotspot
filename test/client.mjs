@@ -146,17 +146,19 @@ function renderDeep(node, depth = 0) {
 function renderRegistered(entry, props) {
   return renderDeep(entry.component(props));
 }
+let panelText = '';
+let sectText = '';
 try {
   const panel = renderRegistered(overlay, {});
   check('浮层渲染出面板根节点', panel?.type === 'div' && panel.props.className === 'hotspot-panel', String(panel?.props?.className));
-  const panelText = JSON.stringify(panel);
+  panelText = JSON.stringify(panel);
   check('浮层含拖动标题栏', panelText.includes('hotspot-panel-head'));
   check('浮层含缩放手柄', panelText.includes('hotspot-panel-resize'));
   check('浮层含折叠/隐藏按钮', panelText.includes('折叠成药丸') && panelText.includes('隐藏'));
   check('浮层内嵌榜单主体（紧凑模式，无大标题）', panelText.includes('hotspot-panel-body') && !panelText.includes('按日 / 周 / 月追踪'));
 
   const sect = renderRegistered(section, {});
-  const sectText = JSON.stringify(sect);
+  sectText = JSON.stringify(sect);
   // 注意：按钮文案随当前模式变化（panel 模式下是「✓ 浮层已显示」而不是「显示浮层」），
   // 所以这里用正则匹配两种形态，别把模式相关文案写死。
   check(
@@ -167,7 +169,7 @@ try {
     '设置页三个模式按钮都在',
     /浮层已显示|显示浮层/.test(sectText) && sectText.includes('折叠成药丸') && sectText.includes('隐藏浮层'),
   );
-  check('两者都含周期页签与刷新按钮', panelText.includes('日榜') && sectText.includes('日榜') && panelText.includes('hotspot-btn'));
+  check('两者都含周期页签与刷新按钮', panelText.includes('日榜') && sectText.includes('日榜') && panelText.includes('hotspot-icon-btn'));
   check('浮层不重复渲染产品描述（说明只在设置页）', !panelText.includes('按日 / 周 / 月追踪'));
 } catch (error) {
   check('组件渲染不抛错', false, error.message);
@@ -185,7 +187,7 @@ check('pill 被保留', I.parsePanelState({ mode: 'pill' }).mode === 'pill');
 check('hidden 被保留', I.parsePanelState({ mode: 'hidden' }).mode === 'hidden');
 const dirty = I.parsePanelState({ x: 'abc', y: 5, w: 10, h: 10, mode: 'panel' });
 check('非数字 x → null（回到默认位置）', dirty.x === null, String(dirty.x));
-check('过小的尺寸被抬到下限', dirty.w === 300 && dirty.h === 220, dirty.w + 'x' + dirty.h);
+check('过小的尺寸被抬到下限（320x240）', dirty.w === 320 && dirty.h === 240, dirty.w + 'x' + dirty.h);
 
 // 夹取：往右下角拖出屏幕
 const br = I.clampRect({ x: 9999, y: 9999, w: 400, h: 500 }, viewport);
@@ -205,12 +207,56 @@ check('已有坐标时沿用（并夹取）', I.resolveRect({ x: 100, y: 120, w:
 check('药丸 ↔ 面板 互切', I.nextMode('pill') === 'panel' && I.nextMode('panel') === 'pill' && I.nextMode('hidden') === 'pill');
 
 console.log('\n[6] 源码层面的关键实现');
-check('用 Pointer Events 拖拽', source.includes('pointermove') && source.includes('pointerdown'));
+check('用 Pointer Events 拖拽', source.includes('pointermove') && (source.includes('onPointerDown') || source.includes('pointerdown')));
 check('标题栏 touch-action:none（否则手机拖不动）', source.includes('touch-action:none'));
 check('有拖拽判定阈值（区分点击与拖动）', /DRAG_THRESHOLD = \d+/.test(source));
 check('位置/尺寸/模式持久化到 localStorage', source.includes('PANEL_KEY') && source.includes('localStorage.setItem'));
 check('窗口 resize 时重新夹取', source.includes("addEventListener('resize'"));
 check('自动轮询 60 秒且卸载时清理', /POLL_MS = 60000/.test(source) && source.includes('clearInterval(timer)'));
+
+console.log('\n[7] 视觉规范：全部走 --dsw-* 设计 token（而不是写死颜色）');
+const cssText = styles[0].textContent;
+check('使用官方语义色 token', cssText.includes('--dsw-alias-label-primary'));
+check('使用形状 token（圆角 + 高度/阴影）', cssText.includes('--dsw-radius') && (cssText.includes('--dsw-elevation') || cssText.includes('--dsw-shadow')));
+check('每个 token 都带兜底值 var(--dsw-x, …)', /var\(--dsw-[a-z0-9-]+,/.test(cssText));
+check('使用焦点环 token（无障碍）', cssText.includes('--dsw-focus-ring'));
+check('尊重 prefers-reduced-motion', cssText.includes('prefers-reduced-motion'));
+check('不再把 Canvas 当主色写死', !/background:Canvas/.test(cssText));
+check('滚动条也走 token', cssText.includes('--dsw-alias-scrollbar'));
+
+console.log('\n[8] 图标：优先官方组件，取不到降级为字形');
+check('缺少 primitives 时渲染字形占位', panelText.includes('hotspot-glyph'));
+const fakeIcon = (props) => ({ type: 'FakeIcon', props });
+const ICON_NAMES = [
+  'IconRefreshOutlineMedium','IconCompactOutlineMedium','IconCloseOutlineMedium','IconChevronDownOutlineMedium',
+  'IconChevronUpOutlineMedium','IconLinkOutlineMedium','IconGaugeOutlineMedium','IconClockOutlineMedium',
+  'IconEnhanceOutlineMedium','IconWarningTriangleOutlineMedium','IconArchiveOffOutlineMedium',
+  'IconFlatListOutlineMedium','IconFullscreenOutlineMedium',
+];
+const fakePrimitives = {};
+for (const n of ICON_NAMES) fakePrimitives[n] = fakeIcon;
+const reqWithIcons = (n) => {
+  if (n === 'react') return fakeReact;
+  if (n === '@deepseek-ai/dsh-client-ui-primitives') return fakePrimitives;
+  throw new Error('测试未提供模块：' + n);
+};
+const modWithIcons = loaded.factory(reqWithIcons);
+const regsWithIcons = [];
+modWithIcons.apply({
+  slots: {
+    inject: (slotName, generator) => {
+      const it = generator();
+      let step = it.next();
+      while (!step.done) { regsWithIcons.push([slotName, step.value]); step = it.next(); }
+    },
+    register: (options, component) => ({ options, component }),
+  },
+});
+const overlayWithIcons = regsWithIcons.find(([s2]) => s2 === 'shell.overlay')[1];
+const treeWithIcons = renderDeep(overlayWithIcons.component({}));
+const iconText = JSON.stringify(treeWithIcons);
+check('有 primitives 时渲染图标组件', iconText.includes('FakeIcon'));
+check('此时不再出现字形占位', !iconText.includes('hotspot-glyph'));
 
 console.log('\n================ 结果 ================');
 console.log('断言 ' + checks + ' 项，失败 ' + failures.length + ' 项');

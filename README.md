@@ -25,6 +25,36 @@
   拔掉高分辨率显示器之后，面板也不会飘到看不见的地方。
 - 浮层与设置页**共用同一个榜单组件**，不会出现两套渲染逻辑不一致。
 
+### 视觉规范（v0.6.0 起）
+
+界面**不写死任何颜色**，全部走 DSH 自己的设计 token `--dsw-*`，因此会自动长成"系统原生"的样子：
+
+| 类别 | 用到的 token |
+|---|---|
+| 语义色 | `--dsw-alias-label-primary/-secondary/-tertiary/-quaternary`、`-link`、`--dsw-alias-bg-layer-1`、`--dsw-alias-border-l2/l3`、`--dsw-alias-separator-primary`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-state-success/error/warn-*`、`--dsw-alias-button-primary-fill`、`--dsw-alias-label-primary-inverted` |
+| 形状 | `--dsw-radius-md` / `--dsw-radius-panel`、`--dsw-elevation-panel` / `--dsw-elevation-soft` |
+| 排版 | `--dsw-font`、`--dsw-font-base-16` |
+| 交互 | `--dsw-focus-ring-color` / `--dsw-focus-ring-width`、`--dsw-menu-backdrop-filter` |
+| 滚动条 | `--dsw-alias-scrollbar-bg-l2` / `-hover-l2` |
+
+每个变量都带**兜底值**（`var(--dsw-x, …)`）：token 被改名或缺失时界面仍然可用。
+好处是——你自己装了皮肤、或者切到暗色主题，这块浮层会跟着变，而不会像以前那样是一块
+与周围割裂的灰色板子。
+
+**图标**优先用官方 `@deepseek-ai/dsh-client-ui-primitives` 里的图标组件（经 `require` 取得，
+与桌宠插件同一套做法）；取不到就退化成文本字形，绝不因为图标加载失败而崩。
+
+**信息层级重做**：榜单改成可横向滚动的 tab 条、周期改成分段控件、新增一行
+「区间 / 剔除 / 更新日程」状态、长说明折叠进「说明」按钮、列表顶部三名加重、
+加载时用骨架屏、空状态区分「没数据 / 全被筛掉」、页脚合并成一行紧凑统计。
+
+**无障碍**：`focus-visible` 焦点环、`aria-label` / `role`、尊重 `prefers-reduced-motion`。
+浮层默认 460×600、最小 320×240。
+
+> 全局换肤说明：DSH 提供了 `ctx.theme.overrideTokens(source, tokens)`，插件可以叠加一层
+> token 覆盖来整体换肤。**本插件刻意不动全局样式**——两个插件都去改全局 token 会互相打架。
+> 想要整体换肤请用专门的皮肤包（见下）；本插件只保证自己"长得像系统的一部分"。
+
 ---
 
 ## 更新日程（v0.4.0 起）
