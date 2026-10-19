@@ -257,6 +257,12 @@ try {
   check('classify=false 时条目带 unjudged 标记', (off.body.items || []).every((i) => i.verdict === 'unjudged'), JSON.stringify((off.body.items || []).map((i) => i.verdict)));
   check('规则预筛仍然生效（合集/平台级仍被剔除）', !names(off.body).includes('cool/awesome-list') && !names(off.body).includes('big/platform'), JSON.stringify(names(off.body)));
   check('notes 说明判定已关闭', JSON.stringify(off.body.notes).includes('classify=false'), JSON.stringify(off.body.notes));
+
+  console.log('\n[9] 采样后预热：各榜候选主动排队（而不是等人来看）');
+  await call('/dsh-hotspot/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ classify: true }) });
+  const queued = mod.__internals.prewarmClassify(ctx, mod.__internals.loadConfig());
+  check('prewarmClassify 会把候选排进队列', queued > 0, String(queued));
+  check('每榜都有候选被预热（t 榜 + 飙升榜）', queued >= 2, String(queued));
 } catch (error) {
   failures.push('未捕获异常：' + (error?.stack ?? error));
   console.log('\n未捕获异常：' + (error?.stack ?? error));

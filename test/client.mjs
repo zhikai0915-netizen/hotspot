@@ -280,6 +280,23 @@ const iconText = JSON.stringify(treeWithIcons);
 check('有 primitives 时渲染图标组件', iconText.includes('FakeIcon'));
 check('此时不再出现字形占位', !iconText.includes('hotspot-glyph'));
 
+console.log('\n[9] 视觉预设：只影响插件内部，不动全局 token');
+const IU = mod.__internals;
+check('默认密度是 cozy', IU.parseUiState(null).density === 'cozy');
+check('坏 JSON 回落 cozy', IU.parseUiState('{oops').density === 'cozy');
+check('未知密度回落 cozy', IU.parseUiState('{"density":"huge"}').density === 'cozy');
+check(
+  'compact / comfortable 被保留',
+  IU.parseUiState('{"density":"compact"}').density === 'compact' &&
+    IU.parseUiState('{"density":"comfortable"}').density === 'comfortable',
+);
+check('三套预设齐全', IU.DENSITIES.map((d) => d.id).join(',') === 'compact,cozy,comfortable', IU.DENSITIES.map((d) => d.id).join(','));
+check('浮层根节点带 data-density', panelText.includes('"data-density"'));
+check('设置页有三个密度按钮', sectText.includes('紧凑') && sectText.includes('舒适') && sectText.includes('宽松'));
+check('CSS 用密度变量而非写死间距', cssText.includes('[data-density="compact"]') && cssText.includes('var(--hs-pad'));
+check('密度只落 --hs-* 局部变量（没有回写全局 --dsw-*）', !/--dsw-[a-z0-9-]+\s*:\s*[^;]*(compact|comfortable)/.test(cssText));
+check('切换会广播事件让浮层同步', source.includes('UI_EVENT') && source.includes('dispatchEvent'));
+
 console.log('\n================ 结果 ================');
 console.log('断言 ' + checks + ' 项，失败 ' + failures.length + ' 项');
 if (failures.length > 0) {

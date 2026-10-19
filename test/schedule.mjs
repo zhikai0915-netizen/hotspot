@@ -181,7 +181,9 @@ try {
 
   console.log('\n[6] /status 暴露日程');
   const status = await call('/dsh-hotspot/status');
-  check('version 与包一致（0.6.0）', status.body?.version === '0.6.0', String(status.body?.version));
+  // 直接读 package.json 比对，避免每次升版都要改测试
+  const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  check('version 与 package.json 一致', status.body?.version === pkgVersion, String(status.body?.version) + ' vs ' + pkgVersion);
   check('schedule 含 6 条规则', Object.keys(status.body?.schedule ?? {}).length === 6, JSON.stringify(Object.keys(status.body?.schedule ?? {})));
   check('每条规则带 rule/lastBoundary/nextBoundary', ['day', 'week', 'month', 'surge'].every((k) => typeof status.body.schedule[k].rule === 'string' && typeof status.body.schedule[k].nextBoundary === 'string'));
   check('采样进度初始为 null', status.body?.sampledBoundary === null, String(status.body?.sampledBoundary));
