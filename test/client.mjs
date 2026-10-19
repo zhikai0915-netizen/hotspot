@@ -52,6 +52,13 @@ const fakeReact = {
   createElement: (type, props, ...children) => ({ type, props, children }),
 };
 
+const warnings = [];
+const testConsole = {
+  log: (...a) => console.log(...a),
+  error: (...a) => console.error(...a),
+  warn: (...a) => warnings.push(a.map(String).join(' ')),
+};
+
 const sandbox = {
   window: {
     innerWidth: 1440,
@@ -70,7 +77,7 @@ const sandbox = {
     },
   },
   document: fakeDocument,
-  console,
+  console: testConsole,
   fetch: () => Promise.reject(new Error('测试里不发真实请求')),
   setTimeout,
   clearTimeout,
@@ -224,8 +231,23 @@ check('尊重 prefers-reduced-motion', cssText.includes('prefers-reduced-motion'
 check('不再把 Canvas 当主色写死', !/background:Canvas/.test(cssText));
 check('滚动条也走 token', cssText.includes('--dsw-alias-scrollbar'));
 
+// CSS 是手工拼接字符串生成的：漏一个分号/括号就会静默失效，这里做结构校验
+const openBraces = (cssText.match(/\{/g) || []).length;
+const closeBraces = (cssText.match(/\}/g) || []).length;
+check('CSS 大括号配对', openBraces === closeBraces && openBraces > 20, openBraces + ' / ' + closeBraces);
+check('CSS 没有连续分号', !/;;/.test(cssText));
+const blocks = [...cssText.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]);
+let malformed = 0;
+for (const block of blocks) {
+  for (const decl of block.split(';').map((x) => x.trim()).filter(Boolean)) {
+    if (!/^[-a-zA-Z]+\s*:/.test(decl)) malformed += 1;
+  }
+}
+check('CSS 每条声明都形如 prop:value', malformed === 0, '异常 ' + malformed + ' 条 / 共 ' + blocks.length + ' 条规则');
+
 console.log('\n[8] 图标：优先官方组件，取不到降级为字形');
 check('缺少 primitives 时渲染字形占位', panelText.includes('hotspot-glyph'));
+check('缺少图标模块时会告警（而不是静默）', warnings.some((w) => w.includes('图标模块不可用')), JSON.stringify(warnings.slice(0, 2)));
 const fakeIcon = (props) => ({ type: 'FakeIcon', props });
 const ICON_NAMES = [
   'IconRefreshOutlineMedium','IconCompactOutlineMedium','IconCloseOutlineMedium','IconChevronDownOutlineMedium',
