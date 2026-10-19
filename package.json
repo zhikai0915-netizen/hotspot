@@ -1,7 +1,7 @@
 {
   "name": "hotspot",
-  "version": "0.4.0",
-  "description": "DSH GitHub 热榜插件：独立可拖拽浮层，按日/周/月给模型插件、Skill、MCP 服务等小工具排名，含跨榜飙升榜，并用 DSH 的模型为每个项目生成中文简介。",
+  "version": "0.5.0",
+  "description": "DSH GitHub 热榜插件：独立可拖拽浮层，按日/周/月给模型插件、Skill、MCP 服务等小工具排名；用 DSH 的模型判定相关性（剔除平台级项目与合集）并生成中文简介，另含跨榜飙升榜。",
   "type": "module",
   "main": "lib/index.js",
   "icon": "assets/icon.svg",
@@ -32,9 +32,10 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "test": "node test/smoke.mjs && node test/client.mjs && node test/rank.mjs && node test/schedule.mjs",
+    "test": "node test/smoke.mjs && node test/client.mjs && node test/rank.mjs && node test/schedule.mjs && node test/classify.mjs",
     "test:rank": "node test/rank.mjs",
-    "test:schedule": "node test/schedule.mjs"
+    "test:schedule": "node test/schedule.mjs",
+    "test:classify": "node test/classify.mjs"
   },
   "dsh": {
     "bundle": {
@@ -57,6 +58,7 @@
     "id 必须与包名一致（商城上架契约按它比对 entryIds），见 cordis.patch.yml。",
     "未声明 dsh.compatibility：尚未在真实 DSH 版本上实测，不做无证据的兼容声明。",
     "v0.2.0：日内多次采样（+ 旧格式兼容读）、跨榜飙升榜、用 ctx.llm 生成中文简介。",
+    "v0.5.0：模型相关性判定 + 综合打分（剔除平台级/合集/无关），区间改为 as-of-boundary（两端都取采样）。",
     "v0.4.0：按日程更新 —— 每个「榜单 × 周期」有自己的边界，跨过边界才重算，其余时间冻结；",
     "  抓数据也从「每 5 分钟」改为「每天 0 点一次」（7 次请求/天），各周期区间=上一边界→本边界。",
     "v0.3.0：榜单改为挂 shell.overlay 的独立可拖拽浮层（拖动/缩放/折叠成药丸/隐藏，位置记忆）。",

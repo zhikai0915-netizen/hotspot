@@ -46,7 +46,10 @@
    —— 相比 v0.3.0 的"每 5 分钟一轮"（约 2000 次/天）降了三个数量级，未认证额度绰绰有余。
 2. **算榜单**：只有**有人看、且跨过了该榜单的更新边界**时才重算，算完**冻结**。
    没人在看的榜单不会白白消耗额度。
-3. **区间**：一律是 [上一个更新边界, 本边界]。所以"本周涨星"就是上周一 0 点到本周一 0 点。
+3. **区间**：一律是 [上一个更新边界, 本边界]，而且**两端都取采样**（as-of-boundary）。
+   所以"本周涨星"就是上周一 0 点到本周一 0 点，"本月"就是上月 1 号到本月 1 号 ——
+   标签即事实。（v0.4.0 拿"最新采样"当终点，会让月榜实际覆盖"上月 1 号到现在"，
+   还会把首次运行时那段十几分钟的微弱历史冻结一整个月；v0.5.0 已修。）
 
 界面上会显示每条榜的**下次更新时间与倒计时**，以及当前是不是冻结结果。
 
@@ -57,6 +60,40 @@
   `weekday` 用 0=周日 … 6=周六；`month.day` 超出当月天数时按当月最后一天算（31 号在 2 月 = 2/28）。
 
 ---
+
+## 榜单质量：模型相关性判定 + 综合打分（v0.5.0 起）
+
+光按话题抓 GitHub 是**不够**的。实测把原始榜单跑出来之后，问题很明显：
+
+| 榜单 | 条目 | ★>5万 的项目 | 中位星数 |
+|---|---|---|---|
+| `dsh-plugin` | 50 | **5**（rea ★254k、deepseek-harness ★250k…） | 7,625 |
+| `agent-skills` | 50 | **17** | 32,500 |
+| `dsh-skin` | 26 | 0 | **1** |
+
+平台级框架、awesome-list 合集会靠话题匹配大量混进来，把「小工具」挤下去。
+所以 v0.5.0 加了一层**用模型做的策展**：
+
+1. **零成本规则预筛**（不花模型调用）
+   - 名字/简介命中合集关键词（`awesome` / `curated` / `导航` / `合集` …）→ 直接剔除
+   - ★ ≥ `ranking.platformStars`（默认 10 万）→ 直接判为平台级
+2. **模型逐条判定**：让它回答「这是本榜该收的**具体小工具**吗」，输出
+   `{"verdict":"tool|platform|list|unrelated","relevance":0-100,"reason":"…"}`
+3. **过滤**：`requireTool` 时只留 `tool`；`relevance < minRelevance`（默认 50）剔除
+4. **综合打分**：`区间涨星 + relevance × relevanceWeight(0.05) + 新鲜度(0/1/2)`
+   —— 相关性只是**边际修正**，不会盖过真实涨星，否则小榜单会被一堆"高相关但零增长"的项目占满。
+
+几个设计细节：
+
+- **判定按榜隔离**：同一仓库在 `mcp-server` 榜可能是工具、在 `dsh-skin` 榜就是无关，
+  所以缓存键是「榜 + 仓库 + 内容指纹」。
+- **异步、可缓存**：和中文简介一样后台串行判定，每轮最多 `classifyBatch` 条；
+  判定结果**永久缓存**（官方简介/话题变了才重新判定）。
+- **待判定的排在已判定之后**，并标「判定中」；此时结果是**临时**的（不冻结），
+  判定完成后会自动重算并锁定。
+- **关得掉**：`"classify": false` 时只做规则预筛。
+- 成本：每个「仓库 × 榜单」一次极短调用（约 100 token 量级），结果长期复用。
+  默认 `platformStars` 会挡掉最贵的那几个巨型项目，不必为它们花调用。
 
 ## 三个核心机制
 
@@ -198,6 +235,17 @@ dsh plugin --profile web add '<hotspot 所在目录的绝对路径>'
   "token": "",
   "summarize": true,          // 是否用 DSH 的模型生成中文简介
   "summaryBatch": 8,          // 每次请求最多补生成几条
+  "classify": true,           // 是否用模型判定「这是不是本榜该收的小工具」
+  "classifyBatch": 10,        // 每次请求最多补判定几条
+  "classifyCooldownMinutes": 720,
+  "classifyModel": null,      // 判定用的模型；null = 跟随当前对话
+  "ranking": {                // 过滤与排序
+    "requireTool": true,      // 只留 verdict=tool
+    "minRelevance": 50,       // 相关性低于它剔除
+    "relevanceWeight": 0.05,  // 综合分里相关性的权重
+    "platformStars": 100000,  // ★ 超过它直接判平台级（0 = 关闭，改由模型判）
+    "listPattern": "awesome|curated|collection|导航|合集|清单|list of|cheat.?sheet"
+  },
   "summaryCooldownMinutes": 360,
   "summaryModel": null,       // {"provider":"...","model":"..."}；null = 跟随当前对话
   "schedule": {               // 各榜单的更新日程（本地时区）；结果只在跨过边界时重算
@@ -248,6 +296,8 @@ dsh plugin --profile web add '<hotspot 所在目录的绝对路径>'
 | PUT | `/dsh-hotspot/config` | 局部更新配置（board 列表是整体替换，注意） |
 | GET | `/dsh-hotspot/rank?board=<id>&period=day\|week\|month\|all&refresh=1` | 排名数据 |
 | GET | `/dsh-hotspot/summaries` | 中文简介缓存、生成进度与**最近一次调用的诊断** |
+| GET | `/dsh-hotspot/classify` | 相关性判定缓存（每条含 verdict / relevance / reason） |
+| POST | `/dsh-hotspot/classify/reset` | 清空判定缓存（想用新模型/新提示重判时用） |
 | POST | `/dsh-hotspot/summaries/reset` | 清空失败记录（想立刻重试时用；平时升级会自动重试） |
 | POST | `/dsh-hotspot/refresh[?board=<id>]` | 立即刷新（全部或单个查询榜） |
 

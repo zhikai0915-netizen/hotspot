@@ -12,7 +12,7 @@
  *
  * 跑法：node test/schedule.mjs
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -68,6 +68,10 @@ globalThis.fetch = async (url, options) => {
 };
 
 // ---------------- 造一份历史采样（好让涨星算得出来） ----------------
+
+// 先加载模块：下面要用它的日程函数算出「今天 00:00 边界」在哪
+const mod = await import('../lib/index.js');
+const I = mod.__internals;
 const snapDir = join(home, 'hotspot', 'snapshots');
 mkdirSync(snapDir, { recursive: true });
 function dayKeyOf(ms) {
@@ -80,9 +84,22 @@ writeFileSync(
   join(snapDir, dayKeyOf(pastAt.getTime()) + '.json'),
   JSON.stringify({ date: dayKeyOf(pastAt.getTime()), samples: [{ at: pastAt.toISOString(), stars: { 'a/one': 100, 'a/two': 50 } }] }),
 );
+// 再在「今天 00:00 边界」上放一份采样，日榜才有目标采样可用（as-of-boundary）
+const dayBoundary = I.lastBoundary(I.DEFAULT_CONFIG.schedule.day, Date.now());
+const boundaryIso = new Date(dayBoundary).toISOString();
+const boundaryDate = dayKeyOf(dayBoundary);
+const boundaryFile = join(snapDir, boundaryDate + '.json');
+let boundarySamples = [];
+if (existsSync(boundaryFile)) {
+  try { boundarySamples = JSON.parse(readFileSync(boundaryFile, 'utf8')).samples ?? []; } catch { boundarySamples = []; }
+}
+boundarySamples = boundarySamples.filter((x) => x.at !== boundaryIso);
+boundarySamples.push({ at: boundaryIso, stars: { 'a/one': 140, 'a/two': 58 } });
+boundarySamples.sort((a, b) => (a.at < b.at ? -1 : 1));
+writeFileSync(boundaryFile, JSON.stringify({ date: boundaryDate, samples: boundarySamples }));
 writeFileSync(
   join(home, 'hotspot', 'config.json'),
-  JSON.stringify({ cacheMinutes: 0, refreshMinutes: 0, scheduleCheckMinutes: 5, summarize: false, boards: [{ id: 't', name: '测试榜', query: 'topic:t' }, { id: 'surge', name: '飙升榜', kind: 'surge' }] }),
+  JSON.stringify({ cacheMinutes: 0, refreshMinutes: 0, scheduleCheckMinutes: 5, summarize: false, classify: false, boards: [{ id: 't', name: '测试榜', query: 'topic:t' }, { id: 'surge', name: '飙升榜', kind: 'surge' }] }),
 );
 
 // ---------------- 启动插件（假 ctx） ----------------
@@ -97,8 +114,6 @@ const ctx = {
     },
   },
 };
-const mod = await import('../lib/index.js');
-const I = mod.__internals;
 mod.apply(ctx);
 const server = createServer((req, res) => Promise.resolve(route.handler(req, res)).catch((e) => res.writeHead(500).end(String(e))));
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -166,7 +181,7 @@ try {
 
   console.log('\n[6] /status 暴露日程');
   const status = await call('/dsh-hotspot/status');
-  check('version = 0.4.0', status.body?.version === '0.4.0', String(status.body?.version));
+  check('version = 0.5.0', status.body?.version === '0.5.0', String(status.body?.version));
   check('schedule 含 6 条规则', Object.keys(status.body?.schedule ?? {}).length === 6, JSON.stringify(Object.keys(status.body?.schedule ?? {})));
   check('每条规则带 rule/lastBoundary/nextBoundary', ['day', 'week', 'month', 'surge'].every((k) => typeof status.body.schedule[k].rule === 'string' && typeof status.body.schedule[k].nextBoundary === 'string'));
   check('采样进度初始为 null', status.body?.sampledBoundary === null, String(status.body?.sampledBoundary));
@@ -187,13 +202,20 @@ try {
   const forced = await call('/dsh-hotspot/rank?board=t&period=day&refresh=1');
   check('手动刷新绕过冻结', forced.body?.scheduled?.frozen === false, String(forced.body?.scheduled?.frozen));
 
-  console.log('\n[8] 边界推进后会重新计算');
+  console.log('\n[8] 边界推进 / 版本变化都会重新计算');
   const frozenPath = join(home, 'hotspot', 'frozen.json');
   const frozen = JSON.parse(readFileSync(frozenPath, 'utf8'));
   frozen.items['t|day'].boundary -= 3 * 86400000; // 假装已经过去了三个边界
   writeFileSync(frozenPath, JSON.stringify(frozen));
   const afterAdvance = await call('/dsh-hotspot/rank?board=t&period=day');
   check('旧边界 → 判定为过期并重算', afterAdvance.body?.scheduled?.frozen === false, String(afterAdvance.body?.scheduled?.frozen));
+  // 升级后旧版本算出的冻结结果必须失效，否则新算法要等一整个周期才生效
+  await call('/dsh-hotspot/rank?board=t&period=day'); // 先让它重新冻结
+  const frozenNow = JSON.parse(readFileSync(frozenPath, 'utf8'));
+  frozenNow.items['t|day'].v = '0.0.0-old';
+  writeFileSync(frozenPath, JSON.stringify(frozenNow));
+  const afterVersionBump = await call('/dsh-hotspot/rank?board=t&period=day');
+  check('冻结条目版本不匹配 → 重算', afterVersionBump.body?.scheduled?.frozen === false, String(afterVersionBump.body?.scheduled?.frozen));
 
   console.log('\n[9] 飙升榜固定按自己的日程，页签不影响');
   const surgeDay = await call('/dsh-hotspot/rank?board=surge&period=day');
@@ -202,7 +224,12 @@ try {
   check('notes 明说页签对它不起作用', JSON.stringify(surgeDay.body?.notes).includes('页签对它不起作用'), JSON.stringify(surgeDay.body?.notes));
   const surgeMonth = await call('/dsh-hotspot/rank?board=surge&period=month');
   check('换页签仍是同一条日程', surgeMonth.body?.scheduled?.rule === '每周一 00:00', String(surgeMonth.body?.scheduled?.rule));
-  check('同一把冻结键：第二次直接命中', surgeMonth.body?.scheduled?.frozen === true, String(surgeMonth.body?.scheduled?.frozen));
+  // v0.5.0：窗口不完整时结果是「临时」的、不冻结，所以这里验"同一把键 → 结果一致"
+  check(
+    '换页签后仍是同一份结果',
+    surgeMonth.body?.windowStart === surgeDay.body?.windowStart && surgeMonth.body?.scheduled?.rule === surgeDay.body?.scheduled?.rule,
+    JSON.stringify({ a: surgeDay.body?.windowStart, b: surgeMonth.body?.windowStart }),
+  );
 
   console.log('\n[10] 日程可配置');
   await call('/dsh-hotspot/config', {

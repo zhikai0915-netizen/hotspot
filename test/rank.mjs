@@ -146,22 +146,45 @@ const isoOf = (ms) => new Date(ms).toISOString();
  * 写一个采样点。同一天可能有多个采样点（monthCut/weekCut/dayCut 可能落在同一天），
  * 所以按日期读-改-写，保持 samples 数组有序。
  */
+/** 时刻(ISO) → 星数快照：断言据此推算预期 delta，不写死数字（跨日期也稳定）。 */
+const SEED = new Map();
+
 function writeSample(atMs, stars) {
+  const at = new Date(atMs).toISOString();
+  SEED.set(at, stars);
   const date = dayKeyOf(atMs);
   const file = join(snapDir, date + '.json');
   let samples = [];
   if (existsSync(file)) {
     try { samples = JSON.parse(readFileSync(file, 'utf8')).samples ?? []; } catch { samples = []; }
   }
-  samples = samples.filter((x) => x.at !== new Date(atMs).toISOString());
-  samples.push({ at: new Date(atMs).toISOString(), stars });
+  samples = samples.filter((x) => x.at !== at);
+  samples.push({ at, stars });
   samples.sort((a, b) => (a.at < b.at ? -1 : 1));
   writeFileSync(file, JSON.stringify({ date, samples }));
 }
 
-writeSample(monthCut, { 'a/one': 10, 'a/two': 20 });        // 月榜/总榜基线
-writeSample(weekCut, { 'a/one': 100, 'a/two': 50 });       // 周榜 + 飙升榜基线
-writeSample(dayCut, { 'a/one': 130, 'a/two': 52, 'a/three': 25 }); // 日榜基线
+/**
+ * 每个周期都要有「基线采样」和「目标采样」两个点：
+ *   · 基线 = cut-off（上一个边界）处的采样
+ *   · 目标 = 边界处的采样
+ * v0.5.0 起区间两端都锚在边界上，所以只在 cut-off 种一个点会得到 baseline === target
+ * （算不出涨星）——这正是第一版测试翻车的原因。
+ */
+const BOUNDARY = { 'a/one': 150, 'a/two': 58, 'a/three': 30 };
+const LAST_MON = { 'a/one': 148, 'a/two': 57, 'a/three': 29 };
+
+writeSample(monthCut, { 'a/one': 10, 'a/two': 20 });   // 月/总榜基线
+writeSample(monthB, { 'a/one': 60, 'a/two': 30 });     // 月/总榜目标
+writeSample(weekCut, { 'a/one': 100, 'a/two': 50 });   // 周榜 + 飙升榜基线
+// 今天正好是周一（weekB === dayB）时，两个边界是同一时刻，必须用同一份星数
+writeSample(weekB, weekB === dayB ? BOUNDARY : LAST_MON);
+writeSample(dayCut, { 'a/one': 140, 'a/two': 55, 'a/three': 25 }); // 日榜基线
+writeSample(dayB, BOUNDARY);                           // 日榜（及周榜）目标
+
+const starsAt = (isoStr) => SEED.get(isoStr) ?? {};
+/** 从样本表推算某仓库的预期 delta。 */
+const expectedDelta = (startIso, endIso, name) => starsAt(endIso)[name] - starsAt(startIso)[name];
 
 // ---------- 配置 ----------
 
@@ -173,7 +196,7 @@ writeFileSync(
     sampleIntervalMinutes: 15,
     perPage: 50,
     snapshotKeepDays: 400,
-    summarize: true,
+    summarize: true, classify: false,
     summaryBatch: 50,
     boards: [
       { id: 't', name: '测试榜', query: 'topic:t' },
@@ -257,23 +280,39 @@ try {
   check('HTTP 200', week.status === 200, JSON.stringify(week.body).slice(0, 160));
   check('basis = star-delta', week.body?.basis === 'star-delta', String(week.body?.basis));
   check('周榜基线 = 上一个周一 00:00', week.body?.windowStart === isoOf(weekCut), String(week.body?.windowStart) + ' vs ' + isoOf(weekCut));
-  check('delta 正确：one=+40、two=+5', week.body?.items?.[0]?.delta === 40 && week.body?.items?.[1]?.delta === 5, JSON.stringify(deltas(week.body)));
+  check('周榜数据截至 = 本边界（as-of-boundary）', week.body?.dataAsOf === isoOf(weekB), String(week.body?.dataAsOf) + ' vs ' + isoOf(weekB));
+  check(
+    'delta 与样本表一致（one/two）',
+    (week.body?.items || []).find((i) => i.fullName === 'a/one')?.delta === expectedDelta(isoOf(weekCut), isoOf(weekB), 'a/one') &&
+      (week.body?.items || []).find((i) => i.fullName === 'a/two')?.delta === expectedDelta(isoOf(weekCut), isoOf(weekB), 'a/two'),
+    JSON.stringify(deltas(week.body)),
+  );
+  check('★ 取自目标采样（不是抓取时的值）', (week.body?.items || []).find((i) => i.fullName === 'a/one')?.stars === starsAt(isoOf(weekB))['a/one'], String((week.body?.items || []).find((i) => i.fullName === 'a/one')?.stars));
   check('按 delta 降序', String(names(week.body)) === 'a/one,a/two,a/three', String(names(week.body)));
   check('基线里没有的仓库标 isNew', week.body?.items?.[2]?.isNew === true && week.body?.items?.[2]?.fullName === 'a/three');
 
   console.log('\n[2] 日榜：基线应换成昨天 00:00 的采样');
   const day = await call('/dsh-hotspot/rank?board=t&period=day&refresh=1');
   check('日榜基线 = 昨天 00:00', day.body?.windowStart === isoOf(dayCut), String(day.body?.windowStart) + ' vs ' + isoOf(dayCut));
+  check('日榜数据截至 = 今天 00:00', day.body?.dataAsOf === isoOf(dayB), String(day.body?.dataAsOf) + ' vs ' + isoOf(dayB));
   check(
-    'delta 变成 one=+10、three=+5、two=+3（2 天前的采样里三个都在）',
-    JSON.stringify(deltas(day.body)) === JSON.stringify([['a/one', 10], ['a/three', 5], ['a/two', 3]]),
+    '日榜 delta 与样本表一致（三个仓库都在基线里）',
+    ['a/one', 'a/two', 'a/three'].every(
+      (n) => (day.body?.items || []).find((i) => i.fullName === n)?.delta === expectedDelta(isoOf(dayCut), isoOf(dayB), n),
+    ),
     JSON.stringify(deltas(day.body)),
   );
+  check('日榜按 delta 降序', ['a/one', 'a/three', 'a/two'].every((n, idx) => names(day.body)[idx] === n), String(names(day.body)));
 
   console.log('\n[3] 月榜 / 总榜：基线落到上个月 1 号');
   const month = await call('/dsh-hotspot/rank?board=t&period=month&refresh=1');
   check('月榜基线 = 上个月 1 号', month.body?.windowStart === isoOf(monthCut), String(month.body?.windowStart) + ' vs ' + isoOf(monthCut));
-  check('月榜 delta：one=+130、two=+35', month.body?.items?.[0]?.delta === 130 && month.body?.items?.[1]?.delta === 35, JSON.stringify(deltas(month.body)));
+  check('月榜数据截至 = 本月 1 号（而不是"现在"）', month.body?.dataAsOf === isoOf(monthB), String(month.body?.dataAsOf) + ' vs ' + isoOf(monthB));
+  check(
+    '月榜 delta 与样本表一致',
+    (month.body?.items || []).find((i) => i.fullName === 'a/one')?.delta === expectedDelta(isoOf(monthCut), isoOf(monthB), 'a/one'),
+    JSON.stringify(deltas(month.body)),
+  );
   const all = await call('/dsh-hotspot/rank?board=t&period=all&refresh=1');
   check('总榜 delta 与月榜一致', JSON.stringify(deltas(all.body)) === JSON.stringify(deltas(month.body)));
   check('样本数 ≥ 4', (all.body?.sampleCount ?? 0) >= 4, String(all.body?.sampleCount));
@@ -284,8 +323,14 @@ try {
   check('basis = star-velocity', surgeDay.body?.basis === 'star-velocity', String(surgeDay.body?.basis));
   check('忽略页签且日程为每周一', surgeDay.body?.scheduled?.ignoresPeriodTabs === true && surgeDay.body?.scheduled?.rule === '每周一 00:00', String(surgeDay.body?.scheduled?.rule));
   check('基线 = 上一个周一（与周榜同一采样）', surgeDay.body?.windowStart === isoOf(weekCut), String(surgeDay.body?.windowStart) + ' vs ' + isoOf(weekCut));
+  check('飙升榜数据截至 = 本边界', surgeDay.body?.dataAsOf === isoOf(weekB), String(surgeDay.body?.dataAsOf) + ' vs ' + isoOf(weekB));
   check('只有基线里存在的仓库进榜（three 被排除）', String(names(surgeDay.body)) === 'a/one,a/two', String(names(surgeDay.body)));
-  check('按涨星排序：one(+40) > two(+5)', surgeDay.body?.items?.[0]?.delta === 40 && surgeDay.body?.items?.[1]?.delta === 5, JSON.stringify(surgeDay.body?.items?.map((i) => [i.fullName, i.delta])));
+  check(
+    '飙升榜 delta 与样本表一致（one/two）',
+    surgeDay.body?.items?.[0]?.delta === expectedDelta(isoOf(weekCut), isoOf(weekB), 'a/one') &&
+      surgeDay.body?.items?.[1]?.delta === expectedDelta(isoOf(weekCut), isoOf(weekB), 'a/two'),
+    JSON.stringify(surgeDay.body?.items?.map((i) => [i.fullName, i.delta])),
+  );
   check('给出星/天速度', typeof surgeDay.body?.items?.[0]?.perDay === 'number' && surgeDay.body.items[0].perDay > 0, String(surgeDay.body?.items?.[0]?.perDay));
 
   console.log('\n[5] 飙升榜：换页签拿到的是同一份冻结结果');
